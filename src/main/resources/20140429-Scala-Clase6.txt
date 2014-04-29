@@ -1,0 +1,294 @@
+Clase 6
+========
+
+Spray: es una librería (toolkit), no un Framework.
+No es Play. La aplicación no está encima de Play
+
+Spray busca exponer una capita HTTP (Rest, nonblocking, etc). Nunca permitir que Spray entre en la aplicación
+Spray llama a la app, y no la app se trae cosas de spray hasta lo más profundo del modelo
+
+libraryDependencies ++= Seq(
+  "com.typesafe.akka" %% "akka-actor" % "2.3.2",
+  "io.spray" % "spray-can" % "1.3.1",
+  "io.spray" % "spray-client" % "1.3.1",
+  "io.spray" % "spray-http" % "1.3.1",
+  "io.spray" % "spray-httpx" % "1.3.1",
+  "io.spray" % "spray-routing" % "1.3.1",
+  "io.spray" %% "spray-json" % "1.2.6",
+  "io.spray" % "spray-testkit" % "1.3.1" % "test",
+  "com.typesafe.akka" %% "akka-testkit" % "2.3.2" % "test"
+)
+
+HTTP REquest, Response, HEaders... todo es inmutable. Todo está modelado en formas ideomáticas del lenguaje.
+Todo está hecho a la scala, todo es case class.
+
+spray http
+spray can: es el server de spray (lo más bajo) Levanta un listener, pedirle algo a la app, nivel simple. Nada de rutas, nada de REST, nada de nada.
+spray routing: DSL para definir servicios HTTP por encima de spray can. Da azucar para definir más fácilmente el workflow de las rutas
+spray testkit
+spray httpx: Marshaling y Unmarshaling. Se puede enchufar spray json, play json, jackson, etc arriba de este.
+spray json: spray no está cerrado a que uses este spray json pero está bueno
+
+
+import spray.routing.SimpleRoutingApp
+
+object SimpleApi extends App with SimpleRoutingApp {
+	startServer(interface = "0.0.0.0", port = 9290) {
+		//Las rutas son una función que toman algo y dejan Unit
+	}
+}
+
+Llega el request, va por el árbol de rutas.
+Existen las Directivas. Es una pequeña unidad que hace algo. Ej: filtrar GET/POST/PUT/DELETE/PATCH. Hay directivas que solo hacen eso.
+Hay directivas para parsear el body, tomar algo del json y hacer algo.
+Esm uy fácil hacer una directiva.
+
+import spray.routing.SimpleRoutingApp
+
+object SimpleApi extends App with SimpleRoutingApp {
+	startServer(interface = "0.0.0.0", port = 9290) {
+		get {
+			path("test") {	//Sin la barra del principio
+				complete {
+					"Ok desde Spray!"
+				}
+			}
+		}
+	}
+}
+
+No compila porque no creé un actor system
+
+import spray.routing.SimpleRoutingApp
+implicit val system = ActorSystem("spray-example")
+object SimpleApi extends App with SimpleRoutingApp {
+	startServer(interface = "0.0.0.0", port = 9290) {
+		[...]
+	}
+}
+
+Ahroa otra:
+import spray.routing.SimpleRoutingApp
+object SimpleApi extends App with SimpleRoutingApp {
+implicit val system = ActorSystem("spray-example")
+	startServer(interface = "0.0.0.0", port = 9290) {
+		get {
+			path("test") {	//Sin la barra del principio
+				complete {
+					"Ok desde Spray!"
+				}
+			} ~			//"~" Concatena rutas
+			path("other") {
+				complete {
+					"Uhhhhhh"
+				}
+			}
+		}
+	}
+}
+
+Ahora concatenamos directivas con lso métodos
+import spray.routing.SimpleRoutingApp
+object SimpleApi extends App with SimpleRoutingApp {
+implicit val system = ActorSystem("spray-example")
+	startServer(interface = "0.0.0.0", port = 9290) {
+		get {
+			path("test") {	//Sin la barra del principio
+				complete {
+					"Ok desde Spray!"
+				}
+			} ~			//"~" Concatena rutas
+			path("other") {
+				complete {
+					"Uhhhhhh"
+				}
+			}
+		} ~
+		post {
+			complete {
+				"Posteaste algo"
+			}
+		}
+	}
+}
+
+Ya vamos viendo que se hace muy verbose. Si hay 5 métodos por 10 entidades se hacen 50 bloques
+(Se pueden separar)
+
+Sacar un número del path:
+
+import spray.routing.SimpleRoutingApp
+object SimpleApi extends App with SimpleRoutingApp {
+implicit val system = ActorSystem("spray-example")
+	startServer(interface = "0.0.0.0", port = 9290) {
+		get {
+			path("test" / IntNumer) {	index =>
+				complete {
+					"Ok desde Spray con el index " + index
+				}
+			} ~			//"~" Concatena rutas
+			path("other") {
+				complete {
+					"Uhhhhhh"
+				}
+			}
+		}
+	}
+}
+
+ "/ IntNumer) {	index =>" con el / IntNumber hago que me tome test/{id}, eso lo pone en la constante index
+
+El InnerDirective lo paso como una extracción. Osea que la Directive tiene que ser una función que reciba el intNumber y devuelva Unit
+Si devuelve un future de algo, sabe cómo responder
+
+Siempre se pone el más específico arriba y el más genérico abajo
+
+Sacar algo del querystring
+
+get {
+	path("test" / IntNumer) {	index =>
+		complete {
+			"Ok desde Spray con el index " + index
+		}
+	} ~
+	path("other") {
+		parameters('age.as[Int] ? 18) { age =>
+			complete {
+				"Uhhhhhh" + age
+			}
+		}
+	}
+}
+
+Así busca el /other?age=valor
+Si no viene nada, el valor va a ser 18 (si no le ponía el ?18 entonces tiraba una excepción)
+
+case class Pizza(name: String, cheese: String)
+[...]
+get {
+	path("pizza") {
+		complete {
+			Pizza("napo","muza")
+		}
+	}
+} ~
+post {
+	entity(as[Pizza]) { pizza =>
+		complete {
+		"Post de: " + pizza
+		}
+	}
+}
+
+Spray Json no usa reflection, pero requiere un formato y hacer las cosas más a mano
+parboid 2 usa macros y demás, pero el actual es medio lento.
+
+Esto es específico de sprayjson. Quedaría:
+
+object PizzaProtocol extends DefaultJsonProtocol{
+	implicit val pizzaJsonProtocol = jsonFormat2(Pizza)	//es jsonFormat2 porque tiene 2 miembros (name y cheese), si son 3, es jsonFormat3
+}
+
+object SimpleApi extends App with SimpleRoutingApp with SprayJsonSupport {
+
+	import PizzaProtocol._		//Acá se importa el protocol definido arriba
+
+	implicit val system = ActorSystem("spray-example")
+	startServer(interface = "0.0.0.0", port = 9290) {
+		[...]
+	}
+}
+
+Listo, con eso ya parsea el objeto Pizza y lo devuelve formateado a JSon
+
+(me faltó la opción Option para que no le hagan falta los 2 parámetros y deje uno como None)
+
+
+Imports:
+
+object SimpleApi extends App with SimpleRoutingApp with SprayJsonSupport {
+	import PizzaProtocol._
+	...
+	entity(as[Pizza]) { pizza =>
+		complete {
+		import pizza._
+		"Post de: " + cheese + " name: " + name
+		}
+
+
+CLIENTE:
+========
+
+Ahora bien, del lado del cliente:
+
+object SprayClientExample extends App {
+	import spray.client.pipelining._
+	implicit val system = ActorSystem("client-example")
+	import system.dispatcher
+
+	val pipeline = sendReceive
+
+}
+
+No hace nada porque no dijimos que haga nada
+
+object SprayClientExample extends App with RequestBuilding {
+	import spray.client.pipelining._
+	implicit val system = ActorSystem("client-example")
+	import system.dispatcher
+
+	val pipeline = sendReceive
+	val f = pipeline(Get("http:localhost:9290/pizza"))
+
+	f onComplete(println)
+}
+
+f es un future de HTTPResponse. pero me imprime todo, y no quiero todo, quiero la pizza nomás
+Yo no quiero un future de HTTPResponse, sino un future de Pizza
+
+object SprayClientExample extends App with RequestBuilding {
+	import spray.client.pipelining._
+	implicit val system = ActorSystem("client-example")
+	import system.dispatcher
+
+	val pizzaClient = sendReceive ~> unmarshal[Pizza]	//Es una simple combinación de funciones
+	//unmarshal transforma el future en future de pizza unmarshaleando
+	val f = pizzaClient(Get("http:localhost:9290/pizza"))	//Ahora f es un future de Pizza
+
+	f onComplete(println)		//ojo que es bloqueante
+}
+
+Todavía explota porque no le explicamos cómo unmarshalear
+
+
+object SprayClientExample extends App with RequestBuilding with SprayJsonSupport{
+	import PizzaProtocol._
+	import spray.client.pipelining._
+	implicit val system = ActorSystem("client-example")
+	import system.dispatcher
+
+	val pizzaClient = sendReceive ~> unmarshal[Pizza]
+	
+	val f = pizzaClient(Get("http:localhost:9290/pizza"))
+
+	f onComplete(println)
+}
+
+Ahora sí me muestra: Success(Puzza(napo,Some(muza)))
+
+Separación de rutas:
+
+val getRoute =
+	get {...}
+val postRoute = 
+	post {...}
+
+startServer(interface = "0.0.0.0", port = 9290) {
+	getRoute ~ postRoute
+}
+
+Algo bueno de Spray es que es el modelo del cliente y del servidor es el mismo
+
+Kamon
+=====
+Se puede correr con Docker, pero es difícil de instalar standalone
